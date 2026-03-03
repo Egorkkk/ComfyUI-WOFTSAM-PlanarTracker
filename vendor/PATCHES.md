@@ -1,0 +1,2 @@
+- Lazy import `sam2` in `flatsam.get_predictor()` to allow the ComfyUI node to load in external-masks-only mode without SAM2 installed.
+- Default `H_prewarp` to `np.eye(3)` in `flatsam_track()` so external-masks runs do not hit an `UnboundLocalError` before any prewarp is computed.

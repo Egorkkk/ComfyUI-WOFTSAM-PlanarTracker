@@ -9,7 +9,6 @@ import pickle
 import cv2
 import numpy as np
 import einops
-from sam2.build_sam import build_sam2_video_predictor
 from scipy.signal import find_peaks
 from scipy.ndimage import distance_transform_edt
 import scipy
@@ -36,6 +35,11 @@ class NextSequence(Exception):
 
 def get_predictor(size, memory_stride=None, do_not_update_when_not_present=False):
     logger.info("Building SAM2 video predictor")
+    try:
+        from sam2.build_sam import build_sam2_video_predictor
+    except ImportError as exc:
+        raise RuntimeError("SAM2 is not installed. Install SAM2 or use external_masks mode.") from exc
+
     options = {'tiny': ('tiny', 't'),
                'small': ('small', 's'),
                'base_plus': ('base_plus', 'b+'),
@@ -102,6 +106,7 @@ def flatsam_track(predictor, conf, frames, init_coords, seq_name, debug=False, d
         mask = mask_provider.get_mask(frame_idx)
         sam_timer.stop()
 
+        H_prewarp = np.eye(3)
         debug_info = {'frame_idx': frame_idx, 'debug_enabled': debug}
         if frame_idx == 0:
             debug_info['size'] = frames[0].shape

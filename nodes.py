@@ -1,9 +1,10 @@
 import os
 import sys
 import json
-from typing import List, Tuple, Optional
+from typing import List, Optional
 
 import numpy as np
+import torch
 
 # --- Make vendored flatsam importable ---
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,49 +12,27 @@ _VENDOR_DIR = os.path.join(_THIS_DIR, "vendor")
 if _VENDOR_DIR not in sys.path:
     sys.path.insert(0, _VENDOR_DIR)
 
+try:
+    from .overlay import (
+        align_image_and_mask_batches,
+        build_overlay_images,
+        image_batch_to_uint8_rgb_frames,
+        normalize_image_batch,
+        normalize_mask_batch,
+    )
+except ImportError:
+    from overlay import (
+        align_image_and_mask_batches,
+        build_overlay_images,
+        image_batch_to_uint8_rgb_frames,
+        normalize_image_batch,
+        normalize_mask_batch,
+    )
+
 from flatsam.config import Config
 from flatsam.flatsam import flatsam_track
 from flatsam.utils.geom import H_warp
 import flatsam.utils.geom as gu
-
-
-def _comfy_image_to_uint8_rgb_batch(images: np.ndarray) -> List[np.ndarray]:
-    """
-    ComfyUI IMAGE is typically float32 in [0..1], shape [B,H,W,C] (C=3).
-    Return list of uint8 RGB frames [H,W,3].
-    """
-    if images is None:
-        raise ValueError("images is None")
-    if not isinstance(images, np.ndarray):
-        images = np.array(images)
-
-    if images.ndim != 4 or images.shape[-1] not in (3, 4):
-        raise ValueError(f"Expected images shape [B,H,W,C], got {images.shape}")
-
-    imgs = images[..., :3]
-    imgs = np.clip(imgs, 0.0, 1.0)
-    imgs_u8 = (imgs * 255.0).round().astype(np.uint8)
-    return [imgs_u8[i] for i in range(imgs_u8.shape[0])]
-
-
-def _comfy_mask_to_uint8_batch(masks: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-    """
-    ComfyUI MASK is typically float32 in [0..1], shape [B,H,W] (sometimes [B,H,W,1]).
-    Return np.uint8 array [B,H,W] with values 0/1.
-    """
-    if masks is None:
-        raise ValueError("masks is None")
-    if not isinstance(masks, np.ndarray):
-        masks = np.array(masks)
-
-    if masks.ndim == 4 and masks.shape[-1] == 1:
-        masks = masks[..., 0]
-
-    if masks.ndim != 3:
-        raise ValueError(f"Expected masks shape [B,H,W] (or [B,H,W,1]), got {masks.shape}")
-
-    m = (masks > threshold).astype(np.uint8)
-    return m
 
 
 def _parse_init_corners(s: str) -> Optional[np.ndarray]:
@@ -110,6 +89,10 @@ class WOFTSAM_Corners_Track:
             "required": {
                 "images": ("IMAGE",),
                 "masks": ("MASK",),
+                "overlay_enable": ("BOOLEAN", {"default": True}),
+                "overlay_opacity": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "overlay_mode": (["fill", "outline"], {"default": "fill"}),
+                "overlay_color": (["red", "green", "blue"], {"default": "red"}),
             },
             "optional": {
                 # If empty: use bbox from first mask
@@ -117,22 +100,27 @@ class WOFTSAM_Corners_Track:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("corners_json",)
+    RETURN_TYPES = ("STRING", "IMAGE")
+    RETURN_NAMES = ("corners_json", "overlay_images")
     FUNCTION = "run"
     CATEGORY = "tracking/planar"
 
-    def run(self, images, masks, init_corners=""):
-        frames = _comfy_image_to_uint8_rgb_batch(images)
-        ext_masks = _comfy_mask_to_uint8_batch(masks)  # (T,H,W) of 0/1
+    def run(
+        self,
+        images,
+        masks,
+        overlay_enable=True,
+        overlay_opacity=0.35,
+        overlay_mode="fill",
+        overlay_color="red",
+        init_corners="",
+    ):
+        image_batch = normalize_image_batch(images)
+        mask_batch = normalize_mask_batch(masks)
+        track_images, track_masks = align_image_and_mask_batches(image_batch, mask_batch)
 
-        # Align lengths defensively
-        T = min(len(frames), int(ext_masks.shape[0]))
-        if T == 0:
-            raise ValueError("No frames or masks to process")
-        if len(frames) != ext_masks.shape[0]:
-            frames = frames[:T]
-            ext_masks = ext_masks[:T]
+        frames = image_batch_to_uint8_rgb_frames(track_images)
+        ext_masks = (track_masks > 0.5).to(dtype=torch.uint8).numpy()
 
         init_coords = _parse_init_corners(init_corners)
         if init_coords is None:
@@ -168,7 +156,19 @@ class WOFTSAM_Corners_Track:
             all_corners.append(_coords_2x4_to_list(current_corners))
 
         corners_json = json.dumps(all_corners, ensure_ascii=False)
-        return (corners_json,)
+        if overlay_enable:
+            overlay_images = build_overlay_images(
+                track_images,
+                track_masks,
+                enabled=True,
+                opacity=overlay_opacity,
+                mode=overlay_mode,
+                color=overlay_color,
+            )
+        else:
+            overlay_images = image_batch
+
+        return (corners_json, overlay_images)
 
 
 NODE_CLASS_MAPPINGS = {
