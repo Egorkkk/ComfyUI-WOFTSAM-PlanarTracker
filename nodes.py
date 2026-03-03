@@ -84,6 +84,25 @@ def _tensor_min_max(value):
     return (float(value.min().item()), float(value.max().item()))
 
 
+def _coerce_overlay_enable(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "":
+            return True
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+        return True
+    if value is None:
+        return True
+    return bool(value)
+
+
 class WOFTSAM_Corners_Track:
     """
     ComfyUI node: track planar corners using WOFTSAM with externally provided per-frame masks.
@@ -95,15 +114,15 @@ class WOFTSAM_Corners_Track:
             "required": {
                 "images": ("IMAGE",),
                 "masks": ("MASK",),
+            },
+            "optional": {
+                # If empty: use bbox from first mask
+                "init_corners": ("STRING", {"default": ""}),
                 "overlay_enable": ("BOOLEAN", {"default": True}),
                 "overlay_opacity": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "overlay_mode": (["fill", "outline"], {"default": "fill"}),
                 "overlay_color": (["red", "green", "blue"], {"default": "red"}),
                 "debug_overlay": ("BOOLEAN", {"default": False}),
-            },
-            "optional": {
-                # If empty: use bbox from first mask
-                "init_corners": ("STRING", {"default": ""}),
             }
         }
 
@@ -123,6 +142,8 @@ class WOFTSAM_Corners_Track:
         debug_overlay=False,
         init_corners="",
     ):
+        overlay_enable_raw = overlay_enable
+        overlay_enable = _coerce_overlay_enable(overlay_enable)
         if debug_overlay:
             raw_mask_tensor = masks.detach() if torch.is_tensor(masks) else torch.as_tensor(np.asarray(masks))
             raw_mask_min, raw_mask_max = _tensor_min_max(raw_mask_tensor.to(torch.float32))
@@ -134,6 +155,7 @@ class WOFTSAM_Corners_Track:
                 f"masks_dtype={raw_mask_tensor.dtype}",
                 f"masks_min={raw_mask_min:.4f}",
                 f"masks_max={raw_mask_max:.4f}",
+                f"overlay_enable_raw={overlay_enable_raw!r}",
                 f"overlay_enable={overlay_enable}",
                 f"overlay_opacity={overlay_opacity}",
                 f"overlay_mode={overlay_mode}",
