@@ -100,13 +100,17 @@ def _mask_outline(mask_batch):
     return outline.squeeze(1)
 
 
-def build_overlay_images(image_batch, mask_batch, enabled=True, opacity=0.35, mode="fill", color="red"):
+def build_overlay_images(image_batch, mask_batch, enabled=True, opacity=0.35, mode="fill", color="red", debug=False):
     if not enabled:
+        if debug:
+            print("[WOFTSAM overlay] build skipped: enabled=False")
         return image_batch
 
     image_batch, mask_batch = align_image_and_mask_batches(image_batch, mask_batch)
     alpha = max(0.0, min(1.0, float(opacity)))
     if alpha == 0.0:
+        if debug:
+            print("[WOFTSAM overlay] build skipped: opacity=0")
         return image_batch
 
     if mode == "fill":
@@ -118,4 +122,14 @@ def build_overlay_images(image_batch, mask_batch, enabled=True, opacity=0.35, mo
 
     color_value = _OVERLAY_COLORS.get(color, _OVERLAY_COLORS["red"]).to(image_batch.device)
     blended = image_batch * (1.0 - alpha_mask) + color_value.view(1, 1, 1, 3) * alpha_mask
+    if debug:
+        print(
+            "[WOFTSAM overlay] build:",
+            f"mode={mode}",
+            f"alpha={alpha}",
+            f"mask_min={float(mask_batch.min().item()):.4f}",
+            f"mask_max={float(mask_batch.max().item()):.4f}",
+            f"alpha_mask_max={float(alpha_mask.max().item()):.4f}",
+            f"image_shape={tuple(image_batch.shape)}",
+        )
     return blended.clamp(0.0, 1.0).contiguous()
