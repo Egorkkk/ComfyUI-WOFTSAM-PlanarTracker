@@ -151,6 +151,7 @@ class WOFTSAM_Corners_Track:
                 "overlay_color": (["red", "green", "blue"], {"default": "red"}),
                 "debug_overlay": ("BOOLEAN", {"default": False}),
                 "overlay_source": (["tracked_quad", "input_mask"], {"default": "tracked_quad"}),
+                "debug_tracking": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -170,6 +171,7 @@ class WOFTSAM_Corners_Track:
         overlay_color="red",
         debug_overlay=False,
         overlay_source="tracked_quad",
+        debug_tracking=False,
     ):
         overlay_enable_raw = overlay_enable
         overlay_enable = _coerce_overlay_enable(overlay_enable)
@@ -214,6 +216,27 @@ class WOFTSAM_Corners_Track:
                 f"masks_min={aligned_mask_min:.4f}",
                 f"masks_max={aligned_mask_max:.4f}",
             )
+        if debug_tracking:
+            print(
+                "[WOFTSAM tracking] input batch:",
+                f"T={int(track_images.shape[0])}",
+                f"image_shape={tuple(track_images.shape)}",
+                f"mask_shape={tuple(track_masks.shape)}",
+                f"image_dtype={track_images.dtype}",
+                f"mask_dtype={track_masks.dtype}",
+            )
+            if int(track_images.shape[0]) > 1:
+                image_diff = float((track_images[1] - track_images[0]).abs().mean().item())
+                mask0_sum = float(track_masks[0].sum().item())
+                mask1_sum = float(track_masks[1].sum().item())
+                mask_diff = float((track_masks[1] - track_masks[0]).abs().sum().item())
+                print(
+                    "[WOFTSAM tracking] frame deltas:",
+                    f"image_mean_abs_diff_0_1={image_diff:.6f}",
+                    f"mask_sum_0={mask0_sum:.2f}",
+                    f"mask_sum_1={mask1_sum:.2f}",
+                    f"mask_abs_diff_sum_0_1={mask_diff:.2f}",
+                )
 
         frames = image_batch_to_uint8_rgb_frames(track_images)
         ext_masks = (track_masks > 0.5).to(dtype=torch.uint8).numpy()
@@ -228,13 +251,33 @@ class WOFTSAM_Corners_Track:
         # Minimal config, similar to demo_external_masks defaults
         conf = Config()
         conf.track_function = False
+        if debug_tracking:
+            try:
+                node_hough_enabled = conf.hough_lines.enabled
+            except Exception as exc:
+                node_hough_enabled = f"<missing:{type(exc).__name__}>"
+            print(
+                "[WOFTSAM tracking] tracker config:",
+                f"track_function={conf.track_function}",
+                f"hough_lines.enabled={node_hough_enabled}",
+                "demo_external_masks sets hough_lines.enabled=True, intersection_corners=False, resolve_symmetry.enabled=False, template_update=False",
+            )
 
         # Name used in track_function call (seq_name in demo)
         seq_name = "comfyui_seq"
 
         track_function = conf.track_function if conf.track_function else flatsam_track
+        if debug_tracking:
+            print(
+                "[WOFTSAM tracking] tracker call:",
+                f"track_function={getattr(track_function, '__name__', type(track_function))}",
+                f"frames_passed={len(frames)}",
+                f"ext_masks_shape={ext_masks.shape}",
+                f"ext_masks_dtype={ext_masks.dtype}",
+            )
 
         all_corners = []
+        h2init_history = []
 
         # Call signature mirrors demo_external_masks.py :contentReference[oaicite:7]{index=7}
         for frame_i, sam_mask, _, info in track_function(
@@ -253,8 +296,41 @@ class WOFTSAM_Corners_Track:
 
             current_corners = H_warp(H_init2current, init_coords)  # (2,4)
             all_corners.append(_coords_2x4_to_list(current_corners))
+            h2init_history.append(np.array(info.get("output_H2init", np.eye(3)), copy=True))
+            if debug_tracking and frame_i in (0, 1):
+                print(
+                    "[WOFTSAM tracking] frame result:",
+                    f"frame={frame_i}",
+                    f"sam_mask_sum={float(np.asarray(sam_mask, dtype=np.float32).sum()):.2f}",
+                    f"output_H2init={h2init_history[-1].tolist()}",
+                    f"corners={all_corners[-1]}",
+                )
 
         corners_json = json.dumps(all_corners, ensure_ascii=False)
+        if debug_tracking:
+            print(
+                "[WOFTSAM tracking] corners structure:",
+                f"type={type(all_corners)}",
+                f"len={len(all_corners)}",
+            )
+            if all_corners:
+                corners_np = np.asarray(all_corners, dtype=np.float32)
+                ref = corners_np[0]
+                max_delta = float(np.max(np.abs(corners_np - ref)))
+                sample_indices = sorted({0, min(1, len(all_corners) - 1), min(10, len(all_corners) - 1), len(all_corners) - 1})
+                for idx in sample_indices:
+                    delta = float(np.max(np.abs(corners_np[idx] - ref)))
+                    print(
+                        "[WOFTSAM tracking] corners sample:",
+                        f"frame={idx}",
+                        f"corners={corners_np[idx].tolist()}",
+                        f"max_abs_delta_from_frame0={delta:.6f}",
+                    )
+                print("[WOFTSAM tracking] corners max_delta_all_frames=", f"{max_delta:.6f}")
+            if h2init_history:
+                h2init_np = np.asarray(h2init_history, dtype=np.float32)
+                h2init_max_delta = float(np.max(np.abs(h2init_np - h2init_np[0])))
+                print("[WOFTSAM tracking] output_H2init max_delta_all_frames=", f"{h2init_max_delta:.6f}")
         if overlay_enable:
             if overlay_source == "tracked_quad":
                 overlay_mask_batch = build_quad_masks_from_corners(
