@@ -35,35 +35,60 @@ from flatsam.utils.geom import H_warp
 import flatsam.utils.geom as gu
 
 
-def _parse_init_corners(s: str) -> Optional[np.ndarray]:
-    """
-    Parse "x1,y1,x2,y2,x3,y3,x4,y4" into init_coords shape (2,4) float32.
-    Returns None if empty/blank.
-    """
-    if s is None:
-        return None
-    s = s.strip()
-    if not s:
+def _coerce_point_list(value) -> Optional[np.ndarray]:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
         return None
 
-    # allow JSON too: [[x,y],...]
-    if s.startswith("["):
-        pts = json.loads(s)
-        if not (isinstance(pts, list) and len(pts) == 4):
-            raise ValueError("init_corners JSON must be a list of 4 [x,y] points")
-        arr = np.array(pts, dtype=np.float32)  # (4,2)
-        return arr.T  # (2,4)
+    try:
+        arr = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
 
-    parts = [p.strip() for p in s.replace(";", ",").split(",") if p.strip() != ""]
+    if arr.shape != (4, 2):
+        return None
+    return arr.T
+
+
+def _parse_init_corners(value) -> Optional[np.ndarray]:
+    """
+    Parse init_corners into shape (2,4) float32.
+    Invalid or displaced workflow values fall back to None.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, (list, tuple)):
+        return _coerce_point_list(value)
+
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return _coerce_point_list(parsed)
+
+    normalized = text.replace(";", ",").replace(" ", ",")
+    parts = [part for part in normalized.split(",") if part.strip() != ""]
     if len(parts) != 8:
-        raise ValueError("init_corners must contain 8 numbers: x1,y1,x2,y2,x3,y3,x4,y4")
+        return None
 
-    vals = [float(p) for p in parts]
+    try:
+        vals = [float(part) for part in parts]
+    except ValueError:
+        return None
+
     arr = np.array([[vals[0], vals[1]],
                     [vals[2], vals[3]],
                     [vals[4], vals[5]],
-                    [vals[6], vals[7]]], dtype=np.float32)  # (4,2)
-    return arr.T  # (2,4)
+                    [vals[6], vals[7]]], dtype=np.float32)
+    return arr.T
 
 
 def _init_coords_from_mask(mask0: np.ndarray) -> np.ndarray:
@@ -135,12 +160,12 @@ class WOFTSAM_Corners_Track:
         self,
         images,
         masks,
+        init_corners="",
         overlay_enable=True,
         overlay_opacity=0.35,
         overlay_mode="fill",
         overlay_color="red",
         debug_overlay=False,
-        init_corners="",
     ):
         overlay_enable_raw = overlay_enable
         overlay_enable = _coerce_overlay_enable(overlay_enable)
@@ -189,6 +214,9 @@ class WOFTSAM_Corners_Track:
         ext_masks = (track_masks > 0.5).to(dtype=torch.uint8).numpy()
 
         init_coords = _parse_init_corners(init_corners)
+        if debug_overlay:
+            print("[init_corners] raw=", repr(init_corners), "type=", type(init_corners))
+            print("[init_corners] parsed=", None if init_coords is None else init_coords.tolist())
         if init_coords is None:
             init_coords = _init_coords_from_mask(ext_masks[0])
 
