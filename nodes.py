@@ -152,6 +152,8 @@ class WOFTSAM_Corners_Track:
                 "debug_overlay": ("BOOLEAN", {"default": False}),
                 "overlay_source": (["tracked_quad", "input_mask"], {"default": "tracked_quad"}),
                 "debug_tracking": ("BOOLEAN", {"default": False}),
+                "use_hough_lines": ("BOOLEAN", {"default": True}),
+                "hough_intersection_corners": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -172,9 +174,13 @@ class WOFTSAM_Corners_Track:
         debug_overlay=False,
         overlay_source="tracked_quad",
         debug_tracking=False,
+        use_hough_lines=True,
+        hough_intersection_corners=False,
     ):
         overlay_enable_raw = overlay_enable
         overlay_enable = _coerce_overlay_enable(overlay_enable)
+        use_hough_lines = _coerce_overlay_enable(use_hough_lines)
+        hough_intersection_corners = _coerce_overlay_enable(hough_intersection_corners)
         if debug_overlay:
             raw_mask_tensor = masks.detach() if torch.is_tensor(masks) else torch.as_tensor(np.asarray(masks))
             raw_mask_min, raw_mask_max = _tensor_min_max(raw_mask_tensor.to(torch.float32))
@@ -251,15 +257,20 @@ class WOFTSAM_Corners_Track:
         # Minimal config, similar to demo_external_masks defaults
         conf = Config()
         conf.track_function = False
+        conf.hough_lines = Config()
+        conf.hough_lines.enabled = use_hough_lines
+        conf.hough_lines.intersection_corners = hough_intersection_corners
+        conf.resolve_symmetry = Config()
+        conf.resolve_symmetry.enabled = False
+        conf.resolve_symmetry.template_update = False
         if debug_tracking:
-            try:
-                node_hough_enabled = conf.hough_lines.enabled
-            except Exception as exc:
-                node_hough_enabled = f"<missing:{type(exc).__name__}>"
             print(
                 "[WOFTSAM tracking] tracker config:",
                 f"track_function={conf.track_function}",
-                f"hough_lines.enabled={node_hough_enabled}",
+                f"hough_lines.enabled={conf.hough_lines.enabled}",
+                f"hough_lines.intersection_corners={conf.hough_lines.intersection_corners}",
+                f"resolve_symmetry.enabled={conf.resolve_symmetry.enabled}",
+                f"resolve_symmetry.template_update={conf.resolve_symmetry.template_update}",
                 "demo_external_masks sets hough_lines.enabled=True, intersection_corners=False, resolve_symmetry.enabled=False, template_update=False",
             )
 
@@ -331,6 +342,8 @@ class WOFTSAM_Corners_Track:
                 h2init_np = np.asarray(h2init_history, dtype=np.float32)
                 h2init_max_delta = float(np.max(np.abs(h2init_np - h2init_np[0])))
                 print("[WOFTSAM tracking] output_H2init max_delta_all_frames=", f"{h2init_max_delta:.6f}")
+                if len(all_corners) > 1 and h2init_max_delta == 0.0 and max_delta == 0.0:
+                    print("[WOFTSAM tracking] warning: Tracking produced identity transforms; check hough_lines config / inputs")
         if overlay_enable:
             if overlay_source == "tracked_quad":
                 overlay_mask_batch = build_quad_masks_from_corners(
