@@ -1,5 +1,6 @@
 import logging
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -98,6 +99,43 @@ def _mask_outline(mask_batch):
     eroded = 1.0 - F.max_pool2d(1.0 - mask, kernel_size=3, stride=1, padding=1)
     outline = (dilated > 0.5) & (eroded < 0.5)
     return outline.squeeze(1)
+
+
+def build_quad_masks_from_corners(corners_list, height, width, debug=False):
+    if not corners_list:
+        return None
+
+    quad_masks = []
+    for frame_idx, corners in enumerate(corners_list):
+        try:
+            quad = np.asarray(corners, dtype=np.float32)
+        except (TypeError, ValueError):
+            print(f"[WOFTSAM overlay] warning: invalid tracked quad at frame {frame_idx}, falling back to original images")
+            return None
+
+        if quad.shape != (4, 2):
+            print(f"[WOFTSAM overlay] warning: expected tracked quad shape (4, 2) at frame {frame_idx}, got {quad.shape}")
+            return None
+
+        quad_int = np.rint(quad).astype(np.int32)
+        quad_int[:, 0] = np.clip(quad_int[:, 0], 0, width - 1)
+        quad_int[:, 1] = np.clip(quad_int[:, 1], 0, height - 1)
+
+        mask_quad = np.zeros((height, width), dtype=np.float32)
+        cv2.fillConvexPoly(mask_quad, quad_int, 1.0)
+        quad_masks.append(mask_quad)
+
+        if debug and frame_idx < 2:
+            print(
+                "[WOFTSAM overlay] tracked_quad:",
+                f"frame={frame_idx}",
+                f"quad={quad_int.tolist()}",
+                f"mask_min={float(mask_quad.min()):.4f}",
+                f"mask_max={float(mask_quad.max()):.4f}",
+                f"mask_sum={float(mask_quad.sum()):.1f}",
+            )
+
+    return torch.from_numpy(np.stack(quad_masks, axis=0))
 
 
 def build_overlay_images(image_batch, mask_batch, enabled=True, opacity=0.35, mode="fill", color="red", debug=False):

@@ -15,6 +15,7 @@ if _VENDOR_DIR not in sys.path:
 try:
     from .overlay import (
         align_image_and_mask_batches,
+        build_quad_masks_from_corners,
         build_overlay_images,
         image_batch_to_uint8_rgb_frames,
         normalize_image_batch,
@@ -23,6 +24,7 @@ try:
 except ImportError:
     from overlay import (
         align_image_and_mask_batches,
+        build_quad_masks_from_corners,
         build_overlay_images,
         image_batch_to_uint8_rgb_frames,
         normalize_image_batch,
@@ -148,6 +150,7 @@ class WOFTSAM_Corners_Track:
                 "overlay_mode": (["fill", "outline"], {"default": "fill"}),
                 "overlay_color": (["red", "green", "blue"], {"default": "red"}),
                 "debug_overlay": ("BOOLEAN", {"default": False}),
+                "overlay_source": (["tracked_quad", "input_mask"], {"default": "tracked_quad"}),
             }
         }
 
@@ -166,6 +169,7 @@ class WOFTSAM_Corners_Track:
         overlay_mode="fill",
         overlay_color="red",
         debug_overlay=False,
+        overlay_source="tracked_quad",
     ):
         overlay_enable_raw = overlay_enable
         overlay_enable = _coerce_overlay_enable(overlay_enable)
@@ -184,6 +188,7 @@ class WOFTSAM_Corners_Track:
                 f"overlay_enable={overlay_enable}",
                 f"overlay_opacity={overlay_opacity}",
                 f"overlay_mode={overlay_mode}",
+                f"overlay_source={overlay_source}",
             )
 
         image_batch = normalize_image_batch(images)
@@ -230,7 +235,6 @@ class WOFTSAM_Corners_Track:
         track_function = conf.track_function if conf.track_function else flatsam_track
 
         all_corners = []
-        overlay_masks = []
 
         # Call signature mirrors demo_external_masks.py :contentReference[oaicite:7]{index=7}
         for frame_i, sam_mask, _, info in track_function(
@@ -249,22 +253,42 @@ class WOFTSAM_Corners_Track:
 
             current_corners = H_warp(H_init2current, init_coords)  # (2,4)
             all_corners.append(_coords_2x4_to_list(current_corners))
-            overlay_masks.append(torch.as_tensor(np.asarray(sam_mask), dtype=torch.float32))
 
         corners_json = json.dumps(all_corners, ensure_ascii=False)
         if overlay_enable:
-            overlay_mask_batch = torch.stack(overlay_masks, dim=0) if overlay_masks else track_masks
-            overlay_images = build_overlay_images(
-                track_images,
-                overlay_mask_batch,
-                enabled=True,
-                opacity=overlay_opacity,
-                mode=overlay_mode,
-                color=overlay_color,
-                debug=debug_overlay,
-            )
+            if overlay_source == "tracked_quad":
+                overlay_mask_batch = build_quad_masks_from_corners(
+                    all_corners,
+                    int(track_images.shape[1]),
+                    int(track_images.shape[2]),
+                    debug=debug_overlay,
+                )
+                if overlay_mask_batch is None:
+                    print("[WOFTSAM overlay] warning: tracked quad mask generation failed, returning original images")
+                    overlay_images = image_batch
+                else:
+                    overlay_images = build_overlay_images(
+                        track_images,
+                        overlay_mask_batch,
+                        enabled=True,
+                        opacity=overlay_opacity,
+                        mode=overlay_mode,
+                        color=overlay_color,
+                        debug=debug_overlay,
+                    )
+            else:
+                overlay_images = build_overlay_images(
+                    track_images,
+                    track_masks,
+                    enabled=True,
+                    opacity=overlay_opacity,
+                    mode=overlay_mode,
+                    color=overlay_color,
+                    debug=debug_overlay,
+                )
             if debug_overlay:
-                overlay_delta = float((overlay_images - track_images).abs().max().item()) if overlay_images.numel() > 0 else 0.0
+                delta_base = track_images if overlay_images.shape == track_images.shape else overlay_images
+                overlay_delta = float((overlay_images - delta_base).abs().max().item()) if overlay_images.numel() > 0 else 0.0
                 print(
                     "[WOFTSAM overlay] result:",
                     f"overlay_shape={tuple(overlay_images.shape)}",
